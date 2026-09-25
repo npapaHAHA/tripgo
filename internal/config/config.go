@@ -1,4 +1,3 @@
-// Package config loads and validates the service configuration.
 package config
 
 import (
@@ -10,15 +9,21 @@ import (
 	"time"
 )
 
-// Config contains all runtime settings required by the service.
 type Config struct {
-	HTTPAddr        string
+	HTTP            HTTPConfig
 	LogLevel        slog.Level
 	ShutdownTimeout time.Duration
 	Database        DatabaseConfig
 }
 
-// DatabaseConfig contains the PostgreSQL connection and pool settings.
+type HTTPConfig struct {
+	Addr              string
+	ReadTimeout       time.Duration
+	ReadHeaderTimeout time.Duration
+	WriteTimeout      time.Duration
+	IdleTimeout       time.Duration
+}
+
 type DatabaseConfig struct {
 	URL             string
 	MaxConns        int32
@@ -28,9 +33,28 @@ type DatabaseConfig struct {
 	QueryTimeout    time.Duration
 }
 
-// Load reads configuration from environment variables and validates it.
 func Load() (Config, error) {
 	httpAddr, err := requiredString("HTTP_ADDR")
+	if err != nil {
+		return Config{}, err
+	}
+
+	httpReadTimeout, err := requiredDuration("HTTP_READ_TIMEOUT")
+	if err != nil {
+		return Config{}, err
+	}
+
+	httpReadHeaderTimeout, err := requiredDuration("HTTP_READ_HEADER_TIMEOUT")
+	if err != nil {
+		return Config{}, err
+	}
+
+	httpWriteTimeout, err := requiredDuration("HTTP_WRITE_TIMEOUT")
+	if err != nil {
+		return Config{}, err
+	}
+
+	httpIdleTimeout, err := requiredDuration("HTTP_IDLE_TIMEOUT")
 	if err != nil {
 		return Config{}, err
 	}
@@ -76,7 +100,13 @@ func Load() (Config, error) {
 	}
 
 	cfg := Config{
-		HTTPAddr:        httpAddr,
+		HTTP: HTTPConfig{
+			Addr:              httpAddr,
+			ReadTimeout:       httpReadTimeout,
+			ReadHeaderTimeout: httpReadHeaderTimeout,
+			WriteTimeout:      httpWriteTimeout,
+			IdleTimeout:       httpIdleTimeout,
+		},
 		LogLevel:        logLevel,
 		ShutdownTimeout: shutdownTimeout,
 		Database: DatabaseConfig{
@@ -97,6 +127,22 @@ func Load() (Config, error) {
 }
 
 func (cfg Config) validate() error {
+	if cfg.HTTP.ReadTimeout <= 0 {
+		return fmt.Errorf("HTTP_READ_TIMEOUT must be greater than zero")
+	}
+
+	if cfg.HTTP.ReadHeaderTimeout <= 0 {
+		return fmt.Errorf("HTTP_READ_HEADER_TIMEOUT must be greater than zero")
+	}
+
+	if cfg.HTTP.WriteTimeout <= 0 {
+		return fmt.Errorf("HTTP_WRITE_TIMEOUT must be greater than zero")
+	}
+
+	if cfg.HTTP.IdleTimeout <= 0 {
+		return fmt.Errorf("HTTP_IDLE_TIMEOUT must be greater than zero")
+	}
+
 	if cfg.ShutdownTimeout <= 0 {
 		return fmt.Errorf("SHUTDOWN_TIMEOUT must be greater than zero")
 	}

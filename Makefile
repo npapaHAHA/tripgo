@@ -1,6 +1,22 @@
 OAPI_OPERATION_IDS := createTrip,getTrip,finishTrip,health,ready
 
-.PHONY: generate
+.PHONY: generate migrate migrate-down migrate-status run test
+
+migrate:
+	set -a; . ./.env.example; . ./.env; set +a; go tool goose -dir migrations postgres "$$DATABASE_URL" up
+
+migrate-down:
+	set -a; . ./.env.example; . ./.env; set +a; go tool goose -dir migrations postgres "$$DATABASE_URL" down
+
+migrate-status:
+	set -a; . ./.env.example; . ./.env; set +a; go tool goose -dir migrations postgres "$$DATABASE_URL" status
+
+run:
+	set -a; . ./.env.example; . ./.env; set +a; go run ./cmd/trip-service
+
+test:
+	go test ./...
+
 generate:
 	mkdir -p internal/generated
 	go tool oapi-codegen \
