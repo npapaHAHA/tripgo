@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"log/slog"
+	"math"
 	"os"
 	"strconv"
 	"strings"
@@ -34,27 +35,12 @@ type DatabaseConfig struct {
 }
 
 func Load() (Config, error) {
-	httpAddr, err := requiredString("HTTP_ADDR")
+	httpConfig, err := loadHTTP()
 	if err != nil {
 		return Config{}, err
 	}
 
-	httpReadTimeout, err := requiredDuration("HTTP_READ_TIMEOUT")
-	if err != nil {
-		return Config{}, err
-	}
-
-	httpReadHeaderTimeout, err := requiredDuration("HTTP_READ_HEADER_TIMEOUT")
-	if err != nil {
-		return Config{}, err
-	}
-
-	httpWriteTimeout, err := requiredDuration("HTTP_WRITE_TIMEOUT")
-	if err != nil {
-		return Config{}, err
-	}
-
-	httpIdleTimeout, err := requiredDuration("HTTP_IDLE_TIMEOUT")
+	databaseConfig, err := loadDatabase()
 	if err != nil {
 		return Config{}, err
 	}
@@ -69,108 +55,154 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 
+	if err := validateTelemetry(); err != nil {
+		return Config{}, err
+	}
+
+	return Config{
+		HTTP:            httpConfig,
+		Database:        databaseConfig,
+		LogLevel:        logLevel,
+		ShutdownTimeout: shutdownTimeout,
+	}, nil
+}
+
+func loadHTTP() (HTTPConfig, error) {
+	addr, err := requiredString("HTTP_ADDR")
+	if err != nil {
+		return HTTPConfig{}, err
+	}
+
+	readTimeout, err := requiredDuration("HTTP_READ_TIMEOUT")
+	if err != nil {
+		return HTTPConfig{}, err
+	}
+	readHeaderTimeout, err := requiredDuration("HTTP_READ_HEADER_TIMEOUT")
+	if err != nil {
+		return HTTPConfig{}, err
+	}
+	writeTimeout, err := requiredDuration("HTTP_WRITE_TIMEOUT")
+	if err != nil {
+		return HTTPConfig{}, err
+	}
+	idleTimeout, err := requiredDuration("HTTP_IDLE_TIMEOUT")
+	if err != nil {
+		return HTTPConfig{}, err
+	}
+
+	return HTTPConfig{
+		Addr:              addr,
+		ReadTimeout:       readTimeout,
+		ReadHeaderTimeout: readHeaderTimeout,
+		WriteTimeout:      writeTimeout,
+		IdleTimeout:       idleTimeout,
+	}, nil
+}
+
+func loadDatabase() (DatabaseConfig, error) {
 	databaseURL, err := requiredString("DATABASE_URL")
 	if err != nil {
-		return Config{}, err
+		return DatabaseConfig{}, err
 	}
 
 	databaseMaxConns, err := requiredInt32("DATABASE_MAX_CONNS")
 	if err != nil {
-		return Config{}, err
+		return DatabaseConfig{}, err
 	}
 
 	databaseMinConns, err := requiredInt32("DATABASE_MIN_CONNS")
 	if err != nil {
-		return Config{}, err
+		return DatabaseConfig{}, err
 	}
 
 	databaseMaxConnLifetime, err := requiredDuration("DATABASE_MAX_CONN_LIFETIME")
 	if err != nil {
-		return Config{}, err
+		return DatabaseConfig{}, err
 	}
 
 	databaseConnectTimeout, err := requiredDuration("DATABASE_CONNECT_TIMEOUT")
 	if err != nil {
-		return Config{}, err
+		return DatabaseConfig{}, err
 	}
 
 	databaseQueryTimeout, err := requiredDuration("DATABASE_QUERY_TIMEOUT")
 	if err != nil {
-		return Config{}, err
+		return DatabaseConfig{}, err
 	}
 
-	cfg := Config{
-		HTTP: HTTPConfig{
-			Addr:              httpAddr,
-			ReadTimeout:       httpReadTimeout,
-			ReadHeaderTimeout: httpReadHeaderTimeout,
-			WriteTimeout:      httpWriteTimeout,
-			IdleTimeout:       httpIdleTimeout,
-		},
-		LogLevel:        logLevel,
-		ShutdownTimeout: shutdownTimeout,
-		Database: DatabaseConfig{
-			URL:             databaseURL,
-			MaxConns:        databaseMaxConns,
-			MinConns:        databaseMinConns,
-			MaxConnLifetime: databaseMaxConnLifetime,
-			ConnectTimeout:  databaseConnectTimeout,
-			QueryTimeout:    databaseQueryTimeout,
-		},
+	cfg := DatabaseConfig{
+		URL:             databaseURL,
+		MaxConns:        databaseMaxConns,
+		MinConns:        databaseMinConns,
+		MaxConnLifetime: databaseMaxConnLifetime,
+		ConnectTimeout:  databaseConnectTimeout,
+		QueryTimeout:    databaseQueryTimeout,
 	}
-
 	if err := cfg.validate(); err != nil {
-		return Config{}, fmt.Errorf("validate configuration: %w", err)
+		return DatabaseConfig{}, fmt.Errorf("validate database configuration: %w", err)
 	}
 
 	return cfg, nil
 }
 
-func (cfg Config) validate() error {
-	if cfg.HTTP.ReadTimeout <= 0 {
-		return fmt.Errorf("HTTP_READ_TIMEOUT must be greater than zero")
-	}
-
-	if cfg.HTTP.ReadHeaderTimeout <= 0 {
-		return fmt.Errorf("HTTP_READ_HEADER_TIMEOUT must be greater than zero")
-	}
-
-	if cfg.HTTP.WriteTimeout <= 0 {
-		return fmt.Errorf("HTTP_WRITE_TIMEOUT must be greater than zero")
-	}
-
-	if cfg.HTTP.IdleTimeout <= 0 {
-		return fmt.Errorf("HTTP_IDLE_TIMEOUT must be greater than zero")
-	}
-
-	if cfg.ShutdownTimeout <= 0 {
-		return fmt.Errorf("SHUTDOWN_TIMEOUT must be greater than zero")
-	}
-
-	if cfg.Database.MaxConns <= 0 {
+func (cfg DatabaseConfig) validate() error {
+	if cfg.MaxConns <= 0 {
 		return fmt.Errorf("DATABASE_MAX_CONNS must be greater than zero")
 	}
 
-	if cfg.Database.MinConns < 0 {
+	if cfg.MinConns < 0 {
 		return fmt.Errorf("DATABASE_MIN_CONNS must not be negative")
 	}
 
-	if cfg.Database.MinConns > cfg.Database.MaxConns {
+	if cfg.MinConns > cfg.MaxConns {
 		return fmt.Errorf("DATABASE_MIN_CONNS must not exceed DATABASE_MAX_CONNS")
 	}
 
-	if cfg.Database.MaxConnLifetime <= 0 {
-		return fmt.Errorf("DATABASE_MAX_CONN_LIFETIME must be greater than zero")
+	return nil
+}
+
+func validateTelemetry() error {
+	for _, name := range []string{"OTEL_SERVICE_NAME", "OTEL_EXPORTER_OTLP_ENDPOINT"} {
+		if _, err := requiredString(name); err != nil {
+			return err
+		}
 	}
 
-	if cfg.Database.ConnectTimeout <= 0 {
-		return fmt.Errorf("DATABASE_CONNECT_TIMEOUT must be greater than zero")
+	protocol, err := requiredString("OTEL_EXPORTER_OTLP_PROTOCOL")
+	if err != nil {
+		return err
+	}
+	if protocol != "grpc" && protocol != "http/protobuf" {
+		return fmt.Errorf("OTEL_EXPORTER_OTLP_PROTOCOL must be grpc or http/protobuf")
 	}
 
-	if cfg.Database.QueryTimeout <= 0 {
-		return fmt.Errorf("DATABASE_QUERY_TIMEOUT must be greater than zero")
+	sampler, err := requiredString("OTEL_TRACES_SAMPLER")
+	if err != nil {
+		return err
 	}
+	return validateSampler(sampler)
+}
 
+func validateSampler(sampler string) error {
+	switch sampler {
+	case "always_on", "always_off", "parentbased_always_on", "parentbased_always_off":
+		return nil
+	case "traceidratio", "parentbased_traceidratio":
+		return validateSamplerRatio()
+	default:
+		return fmt.Errorf("OTEL_TRACES_SAMPLER has unsupported value %q", sampler)
+	}
+}
+
+func validateSamplerRatio() error {
+	value, ok := os.LookupEnv("OTEL_TRACES_SAMPLER_ARG")
+	if !ok {
+		return nil
+	}
+	ratio, err := strconv.ParseFloat(value, 64)
+	if err != nil || math.IsNaN(ratio) || ratio < 0 || ratio > 1 {
+		return fmt.Errorf("OTEL_TRACES_SAMPLER_ARG must be a number between 0 and 1")
+	}
 	return nil
 }
 
@@ -197,6 +229,9 @@ func requiredDuration(name string) (time.Duration, error) {
 	duration, err := time.ParseDuration(value)
 	if err != nil {
 		return 0, fmt.Errorf("parse %s=%q as duration: %w", name, value, err)
+	}
+	if duration <= 0 {
+		return 0, fmt.Errorf("%s must be greater than zero", name)
 	}
 
 	return duration, nil

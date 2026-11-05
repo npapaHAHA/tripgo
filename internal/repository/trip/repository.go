@@ -1,4 +1,4 @@
-package database
+package trip
 
 import (
 	"context"
@@ -13,10 +13,14 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/npapaHAHA/tripgo/internal/trip"
+	"github.com/npapaHAHA/tripgo/internal/domain/trip"
+	"github.com/npapaHAHA/tripgo/internal/infra/postgres/transaction"
 )
 
-const activeDriverConstraint = "trips_driver_active_uidx"
+const (
+	activeDriverConstraint = "trips_driver_active_uidx"
+	statusColumn           = "status"
+)
 
 var tripColumns = []string{
 	"id",
@@ -27,7 +31,7 @@ var tripColumns = []string{
 	"end_latitude",
 	"end_longitude",
 	"price",
-	"status",
+	statusColumn,
 	"started_at",
 	"finished_at",
 }
@@ -48,6 +52,18 @@ func NewTripRepository(pool *pgxpool.Pool) *TripRepository {
 	}
 }
 
+func (r *TripRepository) CountActive(ctx context.Context) (int64, error) {
+	query, args, err := r.builder.Select("COUNT(*)").From("trips").Where(sq.Eq{statusColumn: trip.StatusActive}).ToSql()
+	if err != nil {
+		return 0, fmt.Errorf("build active trips query: %w", err)
+	}
+	var count int64
+	if err := transaction.Executor(ctx, r.pool).QueryRow(ctx, query, args...).Scan(&count); err != nil {
+		return 0, fmt.Errorf("count active trips: %w", err)
+	}
+	return count, nil
+}
+
 func (r *TripRepository) Create(ctx context.Context, value trip.Trip) error {
 	query, args, err := r.builder.
 		Insert("trips").
@@ -60,7 +76,7 @@ func (r *TripRepository) Create(ctx context.Context, value trip.Trip) error {
 			"end_latitude",
 			"end_longitude",
 			"price",
-			"status",
+			statusColumn,
 			"started_at",
 			"finished_at",
 		).
@@ -82,7 +98,7 @@ func (r *TripRepository) Create(ctx context.Context, value trip.Trip) error {
 		return fmt.Errorf("build create trip query: %w", err)
 	}
 
-	if _, err := executorFromContext(ctx, r.pool).Exec(ctx, query, args...); err != nil {
+	if _, err := transaction.Executor(ctx, r.pool).Exec(ctx, query, args...); err != nil {
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == "23505" && pgErr.ConstraintName == activeDriverConstraint {
 			return trip.ErrDriverBusy
@@ -115,7 +131,7 @@ func (r *TripRepository) AddStatusHistory(
 		return fmt.Errorf("build add trip status history query: %w", err)
 	}
 
-	if _, err := executorFromContext(ctx, r.pool).Exec(ctx, query, args...); err != nil {
+	if _, err := transaction.Executor(ctx, r.pool).Exec(ctx, query, args...); err != nil {
 		return fmt.Errorf("add trip status history: %w", err)
 	}
 
@@ -132,9 +148,9 @@ func (r *TripRepository) GetByID(ctx context.Context, id uuid.UUID) (trip.Trip, 
 		return trip.Trip{}, fmt.Errorf("build get trip query: %w", err)
 	}
 
-	value, err := scanTrip(executorFromContext(ctx, r.pool).QueryRow(ctx, query, args...))
+	value, err := scanTrip(transaction.Executor(ctx, r.pool).QueryRow(ctx, query, args...))
 	if errors.Is(err, pgx.ErrNoRows) {
-		return trip.Trip{}, trip.ErrNotFound
+		return trip.Trip{}, trip.ErrTripNotFound
 	}
 	if err != nil {
 		return trip.Trip{}, fmt.Errorf("get trip: %w", err)
@@ -146,12 +162,12 @@ func (r *TripRepository) GetByID(ctx context.Context, id uuid.UUID) (trip.Trip, 
 func (r *TripRepository) Finish(ctx context.Context, id uuid.UUID, finishedAt time.Time) (trip.Trip, error) {
 	query, args, err := r.builder.
 		Update("trips").
-		Set("status", trip.StatusCompleted).
+		Set(statusColumn, trip.StatusCompleted).
 		Set("finished_at", finishedAt).
 		Set("updated_at", finishedAt).
 		Where(sq.Eq{
-			"id":     id,
-			"status": trip.StatusActive,
+			"id":         id,
+			statusColumn: trip.StatusActive,
 		}).
 		Suffix("RETURNING " + strings.Join(tripColumns, ", ")).
 		ToSql()
@@ -159,13 +175,13 @@ func (r *TripRepository) Finish(ctx context.Context, id uuid.UUID, finishedAt ti
 		return trip.Trip{}, fmt.Errorf("build finish trip query: %w", err)
 	}
 
-	value, err := scanTrip(executorFromContext(ctx, r.pool).QueryRow(ctx, query, args...))
+	value, err := scanTrip(transaction.Executor(ctx, r.pool).QueryRow(ctx, query, args...))
 	if errors.Is(err, pgx.ErrNoRows) {
 		if _, getErr := r.GetByID(ctx, id); getErr != nil {
 			return trip.Trip{}, getErr
 		}
 
-		return trip.Trip{}, trip.ErrCompleted
+		return trip.Trip{}, trip.ErrTripCompleted
 	}
 	if err != nil {
 		return trip.Trip{}, fmt.Errorf("finish trip: %w", err)
@@ -196,6 +212,11 @@ func scanTrip(row rowScanner) (trip.Trip, error) {
 	}
 
 	value.Status = trip.Status(status)
+	value.StartedAt = value.StartedAt.UTC()
+	if value.FinishedAt != nil {
+		finishedAt := value.FinishedAt.UTC()
+		value.FinishedAt = &finishedAt
+	}
 
 	return value, nil
 }

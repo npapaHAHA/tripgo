@@ -1,4 +1,4 @@
-package database
+package transaction
 
 import (
 	"context"
@@ -26,7 +26,7 @@ type executor interface {
 
 type txContextKey struct{}
 
-func NewTxManager(pool *pgxpool.Pool) TxManager {
+func New(pool *pgxpool.Pool) TxManager {
 	return &txManager{pool: pool}
 }
 
@@ -67,7 +67,7 @@ func (m *txManager) Do(ctx context.Context, fn func(ctx context.Context) error) 
 	return nil
 }
 
-func executorFromContext(ctx context.Context, pool *pgxpool.Pool) executor {
+func Executor(ctx context.Context, pool *pgxpool.Pool) executor {
 	if tx, ok := transactionFromContext(ctx); ok {
 		return tx
 	}
