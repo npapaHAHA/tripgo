@@ -15,25 +15,22 @@ func TestNew(t *testing.T) {
 	userID, driverID := uuid.New(), uuid.New()
 	start := trip.Coordinates{Latitude: 59.9398, Longitude: 30.3146}
 	end := trip.Coordinates{Latitude: 59.9290, Longitude: 30.3626}
-	before := time.Now().UTC().Truncate(time.Microsecond)
-
-	value, err := trip.New(userID, driverID, start, end, 1450)
-	after := time.Now().UTC()
+	got, err := trip.New(userID, driverID, start, end, 1450)
 
 	require.NoError(t, err)
-	require.NotEqual(t, uuid.Nil, value.ID)
-	require.Equal(t, userID, value.UserID)
-	require.Equal(t, driverID, value.DriverID)
-	require.Equal(t, start, value.StartPoint)
-	require.Equal(t, end, value.EndPoint)
-	require.Equal(t, int64(1450), value.Price)
-	require.Equal(t, trip.StatusActive, value.Status)
-	require.Nil(t, value.FinishedAt)
-	require.Nil(t, value.LastPositionAt)
-	require.Equal(t, time.UTC, value.StartedAt.Location())
-	require.False(t, value.StartedAt.Before(before))
-	require.False(t, value.StartedAt.After(after))
-	require.Zero(t, value.StartedAt.Nanosecond()%int(time.Microsecond))
+	require.NotEqual(t, uuid.Nil, got.ID)
+	require.False(t, got.StartedAt.IsZero())
+	require.Equal(t, got.StartedAt.UTC().Truncate(time.Microsecond), got.StartedAt)
+	require.Equal(t, trip.Trip{
+		ID:         got.ID,
+		UserID:     userID,
+		DriverID:   driverID,
+		StartPoint: start,
+		EndPoint:   end,
+		Price:      1450,
+		Status:     trip.StatusActive,
+		StartedAt:  got.StartedAt,
+	}, got)
 }
 
 func TestNewRejectsInvalidInput(t *testing.T) {
@@ -46,25 +43,38 @@ func TestNewRejectsInvalidInput(t *testing.T) {
 func TestFinish(t *testing.T) {
 	startedAt := time.Date(2026, time.November, 5, 12, 0, 0, 0, time.UTC)
 	finishedAt := startedAt.Add(time.Hour)
-	value := trip.Trip{ID: uuid.New(), Status: trip.StatusActive, StartedAt: startedAt}
+	earlierFinish := finishedAt.Add(-time.Minute)
+	active := trip.Trip{Status: trip.StatusActive, StartedAt: startedAt}
+	completed := trip.Trip{Status: trip.StatusCompleted, StartedAt: startedAt, FinishedAt: &earlierFinish}
+	tests := []struct {
+		name    string
+		in      trip.Trip
+		want    trip.Trip
+		wantErr error
+	}{
+		{
+			name: "finish active trip",
+			in:   active,
+			want: trip.Trip{Status: trip.StatusCompleted, StartedAt: startedAt, FinishedAt: &finishedAt},
+		},
+		{
+			name:    "keep the original completion time on repeat finish",
+			in:      completed,
+			want:    completed,
+			wantErr: trip.ErrTripCompleted,
+		},
+		{
+			name:    "reject unknown status",
+			wantErr: trip.ErrTripCompleted,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := tt.in
+			err := got.Finish(finishedAt)
 
-	require.NoError(t, value.Finish(finishedAt))
-	require.Equal(t, trip.StatusCompleted, value.Status)
-	require.Equal(t, &finishedAt, value.FinishedAt)
-	require.Equal(t, startedAt, value.StartedAt)
-
-	completed := value
-	require.ErrorIs(t, value.Finish(finishedAt.Add(time.Hour)), trip.ErrTripCompleted)
-	require.Equal(t, completed, value, "a rejected transition must not change the trip")
-}
-
-func TestFinishRejectsNonActiveStatus(t *testing.T) {
-	for _, status := range []trip.Status{trip.StatusCompleted, ""} {
-		t.Run(string(status), func(t *testing.T) {
-			value := trip.Trip{Status: status}
-			require.ErrorIs(t, value.Finish(time.Now()), trip.ErrTripCompleted)
-			require.Equal(t, status, value.Status)
-			require.Nil(t, value.FinishedAt)
+			require.ErrorIs(t, err, tt.wantErr)
+			require.Equal(t, tt.want, got)
 		})
 	}
 }

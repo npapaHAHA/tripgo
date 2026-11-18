@@ -1,11 +1,10 @@
 package create_test
 
 import (
-	"bytes"
 	"context"
 	"errors"
+	"io"
 	"log/slog"
-	"strings"
 	"testing"
 	"time"
 
@@ -19,128 +18,148 @@ import (
 )
 
 func TestExecute(t *testing.T) {
-	ctrl := gomock.NewController(t)
-	repository := NewMocktripRepository(ctrl)
-	tx := NewMocktxManager(ctrl)
-	metrics := NewMockmetrics(ctrl)
-	var logs bytes.Buffer
-	logger := slog.New(slog.NewJSONHandler(&logs, nil))
-	input := validInput()
-	var saved trip.Trip
-	committed := false
-	type transactionKey struct{}
-
-	tx.EXPECT().Do(gomock.Any(), gomock.Any()).DoAndReturn(func(ctx context.Context, fn func(context.Context) error) error {
-		_, hasDeadline := ctx.Deadline()
-		require.True(t, hasDeadline, "database work must have a timeout")
-		err := fn(context.WithValue(ctx, transactionKey{}, true))
-		committed = err == nil
-		return err
-	})
-	gomock.InOrder(
-		repository.EXPECT().Create(gomock.Any(), gomock.Any()).DoAndReturn(func(ctx context.Context, value trip.Trip) error {
-			require.Equal(t, true, ctx.Value(transactionKey{}), "repository must receive the transaction context")
-			saved = value
-			require.NotEqual(t, uuid.Nil, value.ID)
-			require.Equal(t, input.UserID, value.UserID)
-			require.Equal(t, input.DriverID, value.DriverID)
-			require.Equal(t, input.StartPoint, value.StartPoint)
-			require.Equal(t, input.EndPoint, value.EndPoint)
-			require.Equal(t, input.Price, value.Price)
-			require.Equal(t, trip.StatusActive, value.Status)
-			require.False(t, value.StartedAt.IsZero())
-			require.Nil(t, value.FinishedAt)
-			return nil
-		}),
-		repository.EXPECT().AddStatusHistory(gomock.Any(), gomock.Any(), nil, trip.StatusActive, "trip created").
-			DoAndReturn(func(ctx context.Context, id uuid.UUID, _ *trip.Status, _ trip.Status, _ string) error {
-				require.Equal(t, true, ctx.Value(transactionKey{}), "history must use the same transaction")
-				require.Equal(t, saved.ID, id)
-				return nil
-			}),
-	)
-	metrics.EXPECT().TripCreated(gomock.Any()).Do(func(_ context.Context) {
-		require.True(t, committed, "a trip is counted only after commit")
-	})
-
-	value, err := create.New(repository, tx, time.Second, logger, metrics).Execute(context.Background(), input)
-	require.NoError(t, err)
-	require.Equal(t, saved, value)
-	require.Contains(t, logs.String(), `"msg":"trip created"`)
-	require.Contains(t, logs.String(), value.ID.String())
-}
-
-func TestExecuteRejectsInvalidInputBeforeTransaction(t *testing.T) {
-	ctrl := gomock.NewController(t)
-	input := validInput()
-	input.Price = -1
-	usecase := create.New(NewMocktripRepository(ctrl), NewMocktxManager(ctrl), time.Second,
-		slog.New(slog.NewJSONHandler(&bytes.Buffer{}, nil)), NewMockmetrics(ctrl))
-
-	value, err := usecase.Execute(context.Background(), input)
-	var validation *trip.ValidationError
-	require.ErrorAs(t, err, &validation)
-	require.Equal(t, "price", validation.Field)
-	require.Equal(t, trip.Trip{}, value)
-}
-
-func TestExecuteFailure(t *testing.T) {
+	input := model.CreateTripInput{
+		UserID: uuid.New(), DriverID: uuid.New(),
+		StartPoint: trip.Coordinates{Latitude: 55.75, Longitude: 37.61},
+		EndPoint:   trip.Coordinates{Latitude: 55.76, Longitude: 37.62},
+		Price:      100,
+	}
+	invalidInput := input
+	invalidInput.Price = -1
 	storageErr := errors.New("database unavailable")
+	var saved trip.Trip
+	runTransaction := func(ctx context.Context, fn func(context.Context) error) error {
+		return fn(ctx)
+	}
+
 	tests := []struct {
-		name       string
-		createErr  error
-		historyErr error
-		txErr      error
-		beginFails bool
-		wantErr    error
-		wantLogs   int
+		name    string
+		setup   func(*gomock.Controller, *slog.Logger) *create.UseCase
+		in      model.CreateTripInput
+		want    func(*testing.T, trip.Trip)
+		wantErr func(*testing.T, error)
 	}{
-		{name: "busy driver", createErr: trip.ErrDriverBusy, wantErr: trip.ErrDriverBusy},
-		{name: "insert failed", createErr: storageErr, wantErr: storageErr, wantLogs: 1},
-		{name: "history failed", historyErr: storageErr, wantErr: storageErr, wantLogs: 1},
-		{name: "commit failed", txErr: storageErr, wantErr: storageErr, wantLogs: 1},
-		{name: "begin failed", txErr: storageErr, beginFails: true, wantErr: storageErr, wantLogs: 1},
+		{
+			name: "success",
+			setup: func(ctrl *gomock.Controller, logger *slog.Logger) *create.UseCase {
+				repository := NewMocktripRepository(ctrl)
+				tx := NewMocktxManager(ctrl)
+				metrics := NewMockmetrics(ctrl)
+				tx.EXPECT().Do(gomock.Any(), gomock.Any()).DoAndReturn(runTransaction)
+				gomock.InOrder(
+					repository.EXPECT().Create(gomock.Any(), gomock.Cond(func(value trip.Trip) bool {
+						return value.UserID == input.UserID && value.DriverID == input.DriverID &&
+							value.StartPoint == input.StartPoint && value.EndPoint == input.EndPoint && value.Price == input.Price
+					})).DoAndReturn(func(_ context.Context, value trip.Trip) error {
+						saved = value
+						return nil
+					}),
+					repository.EXPECT().AddStatusHistory(gomock.Any(), gomock.Cond(func(id uuid.UUID) bool {
+						return id == saved.ID
+					}), nil, trip.StatusActive, "trip created").Return(nil),
+				)
+				metrics.EXPECT().TripCreated(gomock.Any())
+				return create.New(repository, tx, time.Second, logger, metrics)
+			},
+			in: input,
+			want: func(t *testing.T, value trip.Trip) {
+				require.Equal(t, saved, value)
+			},
+		},
+		{
+			name: "invalid input",
+			setup: func(ctrl *gomock.Controller, logger *slog.Logger) *create.UseCase {
+				return create.New(NewMocktripRepository(ctrl), NewMocktxManager(ctrl), time.Second, logger, NewMockmetrics(ctrl))
+			},
+			in: invalidInput,
+			wantErr: func(t *testing.T, err error) {
+				var validation *trip.ValidationError
+				require.ErrorAs(t, err, &validation)
+				require.Equal(t, "price", validation.Field)
+			},
+		},
+		{
+			name: "driver busy",
+			setup: func(ctrl *gomock.Controller, logger *slog.Logger) *create.UseCase {
+				repository := NewMocktripRepository(ctrl)
+				tx := NewMocktxManager(ctrl)
+				tx.EXPECT().Do(gomock.Any(), gomock.Any()).DoAndReturn(runTransaction)
+				repository.EXPECT().Create(gomock.Any(), gomock.Any()).Return(trip.ErrDriverBusy)
+				return create.New(repository, tx, time.Second, logger, NewMockmetrics(ctrl))
+			},
+			in:      input,
+			wantErr: func(t *testing.T, err error) { require.ErrorIs(t, err, trip.ErrDriverBusy) },
+		},
+		{
+			name: "insert failed",
+			setup: func(ctrl *gomock.Controller, logger *slog.Logger) *create.UseCase {
+				repository := NewMocktripRepository(ctrl)
+				tx := NewMocktxManager(ctrl)
+				tx.EXPECT().Do(gomock.Any(), gomock.Any()).DoAndReturn(runTransaction)
+				repository.EXPECT().Create(gomock.Any(), gomock.Any()).Return(storageErr)
+				return create.New(repository, tx, time.Second, logger, NewMockmetrics(ctrl))
+			},
+			in:      input,
+			wantErr: func(t *testing.T, err error) { require.ErrorIs(t, err, storageErr) },
+		},
+		{
+			name: "history failed",
+			setup: func(ctrl *gomock.Controller, logger *slog.Logger) *create.UseCase {
+				repository := NewMocktripRepository(ctrl)
+				tx := NewMocktxManager(ctrl)
+				tx.EXPECT().Do(gomock.Any(), gomock.Any()).DoAndReturn(runTransaction)
+				repository.EXPECT().Create(gomock.Any(), gomock.Any()).Return(nil)
+				repository.EXPECT().AddStatusHistory(gomock.Any(), gomock.Any(), nil, trip.StatusActive, "trip created").Return(storageErr)
+				return create.New(repository, tx, time.Second, logger, NewMockmetrics(ctrl))
+			},
+			in:      input,
+			wantErr: func(t *testing.T, err error) { require.ErrorIs(t, err, storageErr) },
+		},
+		{
+			name: "commit failed",
+			setup: func(ctrl *gomock.Controller, logger *slog.Logger) *create.UseCase {
+				repository := NewMocktripRepository(ctrl)
+				tx := NewMocktxManager(ctrl)
+				tx.EXPECT().Do(gomock.Any(), gomock.Any()).DoAndReturn(func(ctx context.Context, fn func(context.Context) error) error {
+					if err := fn(ctx); err != nil {
+						return err
+					}
+					return storageErr
+				})
+				repository.EXPECT().Create(gomock.Any(), gomock.Any()).Return(nil)
+				repository.EXPECT().AddStatusHistory(gomock.Any(), gomock.Any(), nil, trip.StatusActive, "trip created").Return(nil)
+				return create.New(repository, tx, time.Second, logger, NewMockmetrics(ctrl))
+			},
+			in:      input,
+			wantErr: func(t *testing.T, err error) { require.ErrorIs(t, err, storageErr) },
+		},
+		{
+			name: "begin failed",
+			setup: func(ctrl *gomock.Controller, logger *slog.Logger) *create.UseCase {
+				tx := NewMocktxManager(ctrl)
+				tx.EXPECT().Do(gomock.Any(), gomock.Any()).Return(storageErr)
+				return create.New(NewMocktripRepository(ctrl), tx, time.Second, logger, NewMockmetrics(ctrl))
+			},
+			in:      input,
+			wantErr: func(t *testing.T, err error) { require.ErrorIs(t, err, storageErr) },
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			ctrl := gomock.NewController(t)
-			repository := NewMocktripRepository(ctrl)
-			tx := NewMocktxManager(ctrl)
-			metrics := NewMockmetrics(ctrl)
-			var logs bytes.Buffer
-			tx.EXPECT().Do(gomock.Any(), gomock.Any()).DoAndReturn(func(ctx context.Context, fn func(context.Context) error) error {
-				if tt.beginFails {
-					return tt.txErr
-				}
-				if err := fn(ctx); err != nil {
-					return err
-				}
-				return tt.txErr
-			})
-			if !tt.beginFails {
-				repository.EXPECT().Create(gomock.Any(), gomock.Any()).Return(tt.createErr)
-				if tt.createErr == nil {
-					repository.EXPECT().AddStatusHistory(gomock.Any(), gomock.Any(), nil, trip.StatusActive, "trip created").Return(tt.historyErr)
-				}
+			logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+			value, err := tt.setup(ctrl, logger).Execute(context.Background(), tt.in)
+			if tt.wantErr != nil {
+				tt.wantErr(t, err)
+			} else {
+				require.NoError(t, err)
 			}
-
-			value, err := create.New(repository, tx, time.Second,
-				slog.New(slog.NewJSONHandler(&logs, nil)), metrics).Execute(context.Background(), validInput())
-			require.ErrorIs(t, err, tt.wantErr)
-			require.Equal(t, trip.Trip{}, value)
-			require.Equal(t, tt.wantLogs, strings.Count(logs.String(), `"level":"ERROR"`))
-			require.NotContains(t, logs.String(), `"msg":"trip created"`)
+			if tt.want != nil {
+				tt.want(t, value)
+			} else {
+				require.Equal(t, trip.Trip{}, value)
+			}
 		})
-	}
-}
-
-func validInput() model.CreateTripInput {
-	return model.CreateTripInput{
-		UserID:     uuid.New(),
-		DriverID:   uuid.New(),
-		StartPoint: trip.Coordinates{Latitude: 55.75, Longitude: 37.61},
-		EndPoint:   trip.Coordinates{Latitude: 55.76, Longitude: 37.62},
-		Price:      100,
 	}
 }

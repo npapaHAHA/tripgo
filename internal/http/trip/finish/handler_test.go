@@ -1,7 +1,6 @@
 package finish_test
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -20,54 +19,92 @@ import (
 )
 
 func TestFinishTrip(t *testing.T) {
-	id, finishedAt := uuid.New(), time.Now().UTC()
+	id := uuid.MustParse("b7a855a7-3436-4a36-a50e-f76142080816")
+	finishedAt := time.Date(2026, time.November, 18, 10, 0, 0, 0, time.UTC)
+	value := trip.Trip{ID: id, Status: trip.StatusCompleted, FinishedAt: &finishedAt}
+	uc := NewMockusecase(gomock.NewController(t))
+	uc.EXPECT().Execute(gomock.Any(), id).Return(value, nil)
+	router := chi.NewRouter()
+	router.Post("/api/v1/trips/{tripId}/finish", finish.New(uc).ServeHTTP)
+	recorder := httptest.NewRecorder()
+
+	router.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/api/v1/trips/"+id.String()+"/finish", nil))
+
+	require.Equal(t, http.StatusOK, recorder.Code)
+	require.Equal(t, "application/json", recorder.Header().Get("Content-Type"))
+	var body api.Trip
+	require.NoError(t, json.Unmarshal(recorder.Body.Bytes(), &body))
+	require.Equal(t, id, body.Id)
+	require.Equal(t, api.Completed, body.Status)
+	require.NotNil(t, body.FinishedAt)
+	require.True(t, finishedAt.Equal(*body.FinishedAt))
+}
+
+func TestFinishTripErrors(t *testing.T) {
+	id := uuid.MustParse("b7a855a7-3436-4a36-a50e-f76142080816")
 	tests := []struct {
-		name   string
-		err    error
-		status int
-		code   string
+		name       string
+		setup      func(*Mockusecase)
+		wantStatus int
+		wantCode   string
 	}{
-		{"finished", nil, http.StatusOK, ""},
-		{"already completed", trip.ErrTripCompleted, http.StatusConflict, "trip_completed"},
-		{"not found", trip.ErrTripNotFound, http.StatusNotFound, "trip_not_found"},
-		{"repository error", errors.New("postgres password=secret"), http.StatusInternalServerError, "internal_error"},
+		{
+			name: "already completed",
+			setup: func(uc *Mockusecase) {
+				uc.EXPECT().Execute(gomock.Any(), id).Return(trip.Trip{}, trip.ErrTripCompleted)
+			},
+			wantStatus: http.StatusConflict,
+			wantCode:   "trip_completed",
+		},
+		{
+			name: "not found",
+			setup: func(uc *Mockusecase) {
+				uc.EXPECT().Execute(gomock.Any(), id).Return(trip.Trip{}, trip.ErrTripNotFound)
+			},
+			wantStatus: http.StatusNotFound,
+			wantCode:   "trip_not_found",
+		},
+		{
+			name: "repository error",
+			setup: func(uc *Mockusecase) {
+				uc.EXPECT().Execute(gomock.Any(), id).Return(trip.Trip{}, errors.New("postgres password=secret"))
+			},
+			wantStatus: http.StatusInternalServerError,
+			wantCode:   "internal_error",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			uc := NewMockusecase(gomock.NewController(t))
-			value := trip.Trip{ID: id, Status: trip.StatusCompleted, FinishedAt: &finishedAt}
-			uc.EXPECT().Execute(gomock.Any(), id).Return(value, tt.err)
-			route := chi.NewRouteContext()
-			route.URLParams.Add("tripId", id.String())
-			request := httptest.NewRequest(http.MethodPost, "/api/v1/trips/"+id.String()+"/finish", nil)
-			request = request.WithContext(context.WithValue(request.Context(), chi.RouteCtxKey, route))
+			tt.setup(uc)
+			router := chi.NewRouter()
+			router.Post("/api/v1/trips/{tripId}/finish", finish.New(uc).ServeHTTP)
 			recorder := httptest.NewRecorder()
-			finish.New(uc).ServeHTTP(recorder, request)
-			require.Equal(t, tt.status, recorder.Code)
-			if tt.err != nil {
-				require.Contains(t, recorder.Body.String(), `"code":"`+tt.code+`"`)
-				require.NotContains(t, recorder.Body.String(), "postgres")
-				require.NotContains(t, recorder.Body.String(), "secret")
-				return
-			}
-			var body api.Trip
+
+			router.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/api/v1/trips/"+id.String()+"/finish", nil))
+
+			require.Equal(t, tt.wantStatus, recorder.Code)
+			require.Equal(t, "application/problem+json", recorder.Header().Get("Content-Type"))
+			var body api.Problem
 			require.NoError(t, json.Unmarshal(recorder.Body.Bytes(), &body))
-			require.Equal(t, id, body.Id)
-			require.Equal(t, api.Completed, body.Status)
-			require.NotNil(t, body.FinishedAt)
-			require.True(t, finishedAt.Equal(*body.FinishedAt))
+			require.Equal(t, tt.wantCode, body.Code)
+			require.NotContains(t, recorder.Body.String(), "postgres")
+			require.NotContains(t, recorder.Body.String(), "secret")
 		})
 	}
 }
 
 func TestFinishTripInvalidID(t *testing.T) {
 	uc := NewMockusecase(gomock.NewController(t))
-	route := chi.NewRouteContext()
-	route.URLParams.Add("tripId", "invalid")
-	request := httptest.NewRequest(http.MethodPost, "/api/v1/trips/invalid/finish", nil)
-	request = request.WithContext(context.WithValue(request.Context(), chi.RouteCtxKey, route))
+	router := chi.NewRouter()
+	router.Post("/api/v1/trips/{tripId}/finish", finish.New(uc).ServeHTTP)
 	recorder := httptest.NewRecorder()
-	finish.New(uc).ServeHTTP(recorder, request)
+
+	router.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/api/v1/trips/invalid/finish", nil))
+
 	require.Equal(t, http.StatusBadRequest, recorder.Code)
-	require.Contains(t, recorder.Body.String(), `"code":"invalid_request"`)
+	require.Equal(t, "application/problem+json", recorder.Header().Get("Content-Type"))
+	var body api.Problem
+	require.NoError(t, json.Unmarshal(recorder.Body.Bytes(), &body))
+	require.Equal(t, "invalid_request", body.Code)
 }
