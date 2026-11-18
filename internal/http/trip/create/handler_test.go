@@ -124,80 +124,103 @@ func validInput() model.CreateTripInput {
 }
 
 func TestCreateTripInvalidRequest(t *testing.T) {
+	const invalidJSON = "body must be a valid JSON object"
+
 	tests := []struct {
 		name        string
 		body        string
 		contentType string
+		wantDetail  string
 	}{
 		{
 			name:        "wrong content type",
 			body:        validRequest,
 			contentType: "text/plain",
+			wantDetail:  "Content-Type must be application/json",
 		},
 		{
 			name:        "broken json",
 			body:        "{",
 			contentType: jsonContentType,
+			wantDetail:  invalidJSON,
 		},
 		{
 			name:        "extra object",
 			body:        validRequest + `{}`,
 			contentType: jsonContentType,
+			wantDetail:  "body must contain one JSON object",
 		},
 		{
 			name:        "unknown field",
 			body:        strings.Replace(validRequest, `"price": 1450`, `"price": 1450, "other": true`, 1),
 			contentType: jsonContentType,
+			wantDetail:  invalidJSON,
 		},
 		{
 			name:        "empty body",
 			body:        `{}`,
 			contentType: jsonContentType,
+			wantDetail:  "user_id is required",
 		},
 		{
 			name:        "null body",
 			body:        `null`,
 			contentType: jsonContentType,
+			wantDetail:  "user_id is required",
 		},
 		{
 			name:        "missing point",
 			body:        strings.Replace(validRequest, `"start_point": {"latitude": 59.9398, "longitude": 30.3146},`, "", 1),
 			contentType: jsonContentType,
+			wantDetail:  "start_point is required",
 		},
 		{
 			name:        "missing coordinate",
 			body:        strings.Replace(validRequest, `"latitude": 59.9398, `, "", 1),
 			contentType: jsonContentType,
+			wantDetail:  "start_point.latitude is required",
 		},
 		{
 			name:        "null price",
 			body:        strings.Replace(validRequest, `"price": 1450`, `"price": null`, 1),
 			contentType: jsonContentType,
+			wantDetail:  "price is required",
 		},
 		{
 			name:        "invalid uuid",
 			body:        strings.Replace(validRequest, "5cb72c04-7650-45c9-a79b-bcdba0631e0c", "invalid", 1),
 			contentType: jsonContentType,
+			wantDetail:  invalidJSON,
 		},
 		{
 			name:        "zero uuid",
 			body:        strings.Replace(validRequest, "5cb72c04-7650-45c9-a79b-bcdba0631e0c", uuid.Nil.String(), 1),
 			contentType: jsonContentType,
+			wantDetail:  "user_id must not be empty",
 		},
 		{
 			name:        "negative price",
 			body:        strings.Replace(validRequest, `"price": 1450`, `"price": -1`, 1),
 			contentType: jsonContentType,
+			wantDetail:  "price must not be negative",
 		},
 		{
 			name:        "latitude outside range",
 			body:        strings.Replace(validRequest, "59.9398", "91", 1),
 			contentType: jsonContentType,
+			wantDetail:  "start_point.latitude must be between -90 and 90",
 		},
 		{
 			name:        "longitude outside range",
 			body:        strings.Replace(validRequest, "30.3626", "181", 1),
 			contentType: jsonContentType,
+			wantDetail:  "end_point.longitude must be between -180 and 180",
+		},
+		{
+			name:        "coordinates are checked before price",
+			body:        strings.NewReplacer("59.9398", "91", `"price": 1450`, `"price": -1`).Replace(validRequest),
+			contentType: jsonContentType,
+			wantDetail:  "start_point.latitude must be between -90 and 90",
 		},
 	}
 	for _, tt := range tests {
@@ -214,6 +237,8 @@ func TestCreateTripInvalidRequest(t *testing.T) {
 			var body api.Problem
 			require.NoError(t, json.Unmarshal(recorder.Body.Bytes(), &body))
 			require.Equal(t, "invalid_request", body.Code)
+			require.NotNil(t, body.Detail)
+			require.Equal(t, tt.wantDetail, *body.Detail)
 		})
 	}
 }

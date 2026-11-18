@@ -1,9 +1,10 @@
 package trip
 
 import (
-	"math"
+	"errors"
 	"time"
 
+	"github.com/go-playground/validator/v10"
 	"github.com/google/uuid"
 )
 
@@ -15,22 +16,24 @@ const (
 )
 
 type Coordinates struct {
-	Latitude  float64
-	Longitude float64
+	Latitude  float64 `validate:"gte=-90,lte=90"`
+	Longitude float64 `validate:"gte=-180,lte=180"`
 }
 
 type Trip struct {
 	ID             uuid.UUID
-	UserID         uuid.UUID
-	DriverID       uuid.UUID
+	UserID         uuid.UUID `validate:"required"`
+	DriverID       uuid.UUID `validate:"required"`
 	StartPoint     Coordinates
 	EndPoint       Coordinates
-	Price          int64
+	Price          int64 `validate:"gte=0"`
 	Status         Status
 	StartedAt      time.Time
 	FinishedAt     *time.Time
 	LastPositionAt *time.Time
 }
+
+var tripValidator = validator.New()
 
 func New(userID, driverID uuid.UUID, startPoint, endPoint Coordinates, price int64) (Trip, error) {
 	value := Trip{
@@ -61,32 +64,33 @@ func (t *Trip) Finish(at time.Time) error {
 }
 
 func (t Trip) Validate() error {
-	if t.UserID == uuid.Nil {
+	err := tripValidator.Struct(t)
+	if err == nil {
+		return nil
+	}
+
+	var fields validator.ValidationErrors
+	if !errors.As(err, &fields) {
+		return err
+	}
+
+	// Report the first invalid field in declaration order.
+	switch fields[0].StructNamespace() {
+	case "Trip.UserID":
 		return &ValidationError{Field: "user_id", Message: "must not be empty"}
-	}
-	if t.DriverID == uuid.Nil {
+	case "Trip.DriverID":
 		return &ValidationError{Field: "driver_id", Message: "must not be empty"}
-	}
-	if err := validateCoordinates("start_point", t.StartPoint); err != nil {
-		return err
-	}
-	if err := validateCoordinates("end_point", t.EndPoint); err != nil {
-		return err
-	}
-	if t.Price < 0 {
+	case "Trip.StartPoint.Latitude":
+		return &ValidationError{Field: "start_point.latitude", Message: "must be between -90 and 90"}
+	case "Trip.StartPoint.Longitude":
+		return &ValidationError{Field: "start_point.longitude", Message: "must be between -180 and 180"}
+	case "Trip.EndPoint.Latitude":
+		return &ValidationError{Field: "end_point.latitude", Message: "must be between -90 and 90"}
+	case "Trip.EndPoint.Longitude":
+		return &ValidationError{Field: "end_point.longitude", Message: "must be between -180 and 180"}
+	case "Trip.Price":
 		return &ValidationError{Field: "price", Message: "must not be negative"}
+	default:
+		return err
 	}
-
-	return nil
-}
-
-func validateCoordinates(field string, value Coordinates) error {
-	if math.IsNaN(value.Latitude) || value.Latitude < -90 || value.Latitude > 90 {
-		return &ValidationError{Field: field + ".latitude", Message: "must be between -90 and 90"}
-	}
-	if math.IsNaN(value.Longitude) || value.Longitude < -180 || value.Longitude > 180 {
-		return &ValidationError{Field: field + ".longitude", Message: "must be between -180 and 180"}
-	}
-
-	return nil
 }
