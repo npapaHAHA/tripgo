@@ -177,11 +177,7 @@ func TestExecute(t *testing.T) {
 			var logs bytes.Buffer
 			logger := slog.New(slog.NewJSONHandler(&logs, nil))
 			value, err := tt.setup(ctrl, logger).Execute(context.Background(), tt.in)
-			if tt.wantErr != nil {
-				require.ErrorIs(t, err, tt.wantErr)
-			} else {
-				require.NoError(t, err)
-			}
+			require.ErrorIs(t, err, tt.wantErr)
 			require.Equal(t, tt.want, value)
 			if tt.wantLog == "" {
 				require.Empty(t, logs.String())
