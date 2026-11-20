@@ -34,6 +34,7 @@ var tripColumns = []string{
 	statusColumn,
 	"started_at",
 	"finished_at",
+	"last_position_at",
 }
 
 type TripRepository struct {
@@ -79,6 +80,7 @@ func (r *TripRepository) Create(ctx context.Context, value trip.Trip) error {
 			statusColumn,
 			"started_at",
 			"finished_at",
+			"last_position_at",
 		).
 		Values(
 			value.ID,
@@ -92,6 +94,7 @@ func (r *TripRepository) Create(ctx context.Context, value trip.Trip) error {
 			value.Status,
 			value.StartedAt,
 			value.FinishedAt,
+			value.LastPositionAt,
 		).
 		ToSql()
 	if err != nil {
@@ -206,6 +209,7 @@ func scanTrip(row rowScanner) (trip.Trip, error) {
 		&status,
 		&value.StartedAt,
 		&value.FinishedAt,
+		&value.LastPositionAt,
 	)
 	if err != nil {
 		return trip.Trip{}, err
@@ -216,6 +220,10 @@ func scanTrip(row rowScanner) (trip.Trip, error) {
 	if value.FinishedAt != nil {
 		finishedAt := value.FinishedAt.UTC()
 		value.FinishedAt = &finishedAt
+	}
+	if value.LastPositionAt != nil {
+		lastPositionAt := value.LastPositionAt.UTC()
+		value.LastPositionAt = &lastPositionAt
 	}
 
 	return value, nil

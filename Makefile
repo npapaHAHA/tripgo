@@ -1,5 +1,5 @@
 SHELL := /bin/bash
-OAPI_OPERATION_IDS := createTrip,getTrip,finishTrip,health,ready
+OAPI_OPERATION_IDS := createTrip,getTrip,finishTrip,createTripPosition,listTripPositions,health,ready
 LINT_VERSION := v2.15.0
 LINT_BIN ?= $(CURDIR)/bin/golangci-lint
 GREMLINS_VERSION := v0.6.0

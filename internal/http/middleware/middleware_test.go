@@ -30,7 +30,7 @@ func TestWrapUsesRouteFromGeneratedRouter(t *testing.T) {
 	endpoint := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
-	router := httpapi.NewRouter(endpoint, endpoint, endpoint, nil, time.Second, slog.New(slog.NewJSONHandler(&bytes.Buffer{}, nil)))
+	router := httpapi.NewRouter(endpoint, endpoint, endpoint, nil, nil, nil, time.Second, slog.New(slog.NewJSONHandler(&bytes.Buffer{}, nil)))
 	handler, reader, recorder, logs := setup(t, router)
 	handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/api/v1/trips/"+tripID, http.NoBody))
 	require.Equal(t, "GET /api/v1/trips/{tripId}", recorder.Ended()[0].Name())

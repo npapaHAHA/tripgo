@@ -50,6 +50,7 @@ func run(cfg config.Config, logger *slog.Logger) (resultErr error) {
 	if err != nil {
 		return fmt.Errorf("listen HTTP: %w", err)
 	}
+	app.StartWorkers(context.Background())
 	serverErr := make(chan error, 1)
 	go func() { serverErr <- app.Server.Serve(listener) }()
 	logger.Info("HTTP server started", "address", listener.Addr().String())

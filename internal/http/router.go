@@ -17,14 +17,17 @@ type router struct {
 	create           http.Handler
 	get              http.Handler
 	finish           http.Handler
+	createPosition   http.Handler
+	listPositions    http.Handler
 	db               readinessChecker
 	readinessTimeout time.Duration
 	logger           *slog.Logger
 }
 
-func NewRouter(createHandler, getHandler, finishHandler http.Handler, db readinessChecker, timeout time.Duration, logger *slog.Logger) http.Handler {
+func NewRouter(createHandler, getHandler, finishHandler, createPositionHandler, listPositionsHandler http.Handler, db readinessChecker, timeout time.Duration, logger *slog.Logger) http.Handler {
 	h := &router{
 		create: createHandler, get: getHandler, finish: finishHandler,
+		createPosition: createPositionHandler, listPositions: listPositionsHandler,
 		db: db, readinessTimeout: timeout, logger: logger,
 	}
 	mux := chi.NewRouter()
@@ -52,6 +55,14 @@ func (h *router) GetTrip(w http.ResponseWriter, r *http.Request, _ api.TripId) {
 
 func (h *router) FinishTrip(w http.ResponseWriter, r *http.Request, _ api.TripId) {
 	h.finish.ServeHTTP(w, r)
+}
+
+func (h *router) CreateTripPosition(w http.ResponseWriter, r *http.Request, _ api.TripId) {
+	h.createPosition.ServeHTTP(w, r)
+}
+
+func (h *router) ListTripPositions(w http.ResponseWriter, r *http.Request, _ api.TripId) {
+	h.listPositions.ServeHTTP(w, r)
 }
 
 func (h *router) Health(w http.ResponseWriter, _ *http.Request) {

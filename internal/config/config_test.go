@@ -36,6 +36,13 @@ func validEnv() map[string]string {
 		"OTEL_EXPORTER_OTLP_PROTOCOL": "http/protobuf",
 		"OTEL_TRACES_SAMPLER":         "parentbased_always_on",
 		"OTEL_TRACES_SAMPLER_ARG":     "0.5",
+		"POSITION_CHECK_INTERVAL":     "30s",
+		"POSITION_STALE_AFTER":        "60s",
+		"POSITION_WORKERS":            "4",
+		"POSITION_QUEUE_SIZE":         "100",
+		"POSITION_SCAN_BATCH_SIZE":    "100",
+		"PUSH_HTTP_URL":               "http://localhost:8090",
+		"PUSH_REQUEST_TIMEOUT":        "1s",
 	}
 }
 
@@ -63,6 +70,15 @@ func TestLoad(t *testing.T) {
 	require.Equal(t, 30*time.Minute, cfg.Database.MaxConnLifetime)
 	require.Equal(t, 5*time.Second, cfg.Database.ConnectTimeout)
 	require.Equal(t, 3*time.Second, cfg.Database.QueryTimeout)
+	require.Equal(t, config.PositionConfig{
+		CheckInterval: 30 * time.Second,
+		StaleAfter:    time.Minute,
+		Workers:       4,
+		QueueSize:     100,
+		BatchSize:     100,
+		PushURL:       "http://localhost:8090",
+		PushTimeout:   time.Second,
+	}, cfg.Positions)
 }
 
 func TestLoadRequiresEnvironment(t *testing.T) {
@@ -96,6 +112,7 @@ func TestLoadRejectsInvalidDurations(t *testing.T) {
 	names := []string{
 		"HTTP_READ_TIMEOUT", "HTTP_READ_HEADER_TIMEOUT", "HTTP_WRITE_TIMEOUT", "HTTP_IDLE_TIMEOUT",
 		"SHUTDOWN_TIMEOUT", "DATABASE_MAX_CONN_LIFETIME", "DATABASE_CONNECT_TIMEOUT", "DATABASE_QUERY_TIMEOUT",
+		"POSITION_CHECK_INTERVAL", "POSITION_STALE_AFTER", "PUSH_REQUEST_TIMEOUT",
 	}
 	for _, name := range names {
 		for _, value := range []string{"0s", "-1s", "not-a-duration"} {

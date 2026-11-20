@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/go-chi/chi/v5"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 
@@ -26,7 +27,7 @@ func discardLogger() *slog.Logger {
 
 func TestHealthDoesNotCheckDatabase(t *testing.T) {
 	db := NewMockreadinessChecker(gomock.NewController(t))
-	router := httpapi.NewRouter(nil, nil, nil, db, time.Second, discardLogger())
+	router := httpapi.NewRouter(nil, nil, nil, nil, nil, db, time.Second, discardLogger())
 	recorder := httptest.NewRecorder()
 	router.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/health", nil))
 	require.Equal(t, http.StatusOK, recorder.Code)
@@ -54,7 +55,7 @@ func TestReady(t *testing.T) {
 			})
 			var logs bytes.Buffer
 			logger := slog.New(slog.NewJSONHandler(&logs, nil))
-			router := httpapi.NewRouter(nil, nil, nil, db, time.Second, logger)
+			router := httpapi.NewRouter(nil, nil, nil, nil, nil, db, time.Second, logger)
 			recorder := httptest.NewRecorder()
 			router.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/ready", nil))
 			require.Equal(t, tt.status, recorder.Code)
@@ -70,7 +71,7 @@ func TestReady(t *testing.T) {
 }
 
 func TestRouterRejectsInvalidTripID(t *testing.T) {
-	router := httpapi.NewRouter(nil, nil, nil, nil, time.Second, discardLogger())
+	router := httpapi.NewRouter(nil, nil, nil, nil, nil, nil, time.Second, discardLogger())
 	recorder := httptest.NewRecorder()
 	router.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/trips/invalid", nil))
 	require.Equal(t, http.StatusBadRequest, recorder.Code)
@@ -88,7 +89,7 @@ func TestRouterErrors(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			router := httpapi.NewRouter(nil, nil, nil, nil, time.Second, discardLogger())
+			router := httpapi.NewRouter(nil, nil, nil, nil, nil, nil, time.Second, discardLogger())
 			recorder := httptest.NewRecorder()
 			router.ServeHTTP(recorder, httptest.NewRequest(tt.method, tt.path, nil))
 			require.Equal(t, tt.status, recorder.Code)
@@ -98,6 +99,33 @@ func TestRouterErrors(t *testing.T) {
 			require.Equal(t, tt.code, body.Code)
 			require.Equal(t, tt.status, int(body.Status))
 			require.Equal(t, tt.path, *body.Instance)
+		})
+	}
+}
+
+func TestPositionRoutes(t *testing.T) {
+	const id = "b7a855a7-3436-4a36-a50e-f76142080816"
+	createPosition := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, id, chi.URLParam(r, "tripId"))
+		w.WriteHeader(http.StatusCreated)
+	})
+	listPositions := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, id, chi.URLParam(r, "tripId"))
+		w.WriteHeader(http.StatusOK)
+	})
+	router := httpapi.NewRouter(nil, nil, nil, createPosition, listPositions, nil, time.Second, discardLogger())
+	tests := []struct {
+		method string
+		status int
+	}{
+		{method: http.MethodPost, status: http.StatusCreated},
+		{method: http.MethodGet, status: http.StatusOK},
+	}
+	for _, tt := range tests {
+		t.Run(tt.method, func(t *testing.T) {
+			recorder := httptest.NewRecorder()
+			router.ServeHTTP(recorder, httptest.NewRequest(tt.method, "/api/v1/trips/"+id+"/positions", nil))
+			require.Equal(t, tt.status, recorder.Code)
 		})
 	}
 }

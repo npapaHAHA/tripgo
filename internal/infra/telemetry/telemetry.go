@@ -25,6 +25,7 @@ import (
 const scopeName = "github.com/npapaHAHA/tripgo"
 
 type Telemetry struct {
+	*positionMetrics
 	TracerProvider *sdktrace.TracerProvider
 	MeterProvider  *sdkmetric.MeterProvider
 	Tracer         trace.Tracer
@@ -95,18 +96,23 @@ func New(ctx context.Context, traceProvider *sdktrace.TracerProvider, meterProvi
 	if err != nil {
 		return nil, fmt.Errorf("create database duration histogram: %w", err)
 	}
+	positions, err := newPositionMetrics(meter)
+	if err != nil {
+		return nil, fmt.Errorf("create position metrics: %w", err)
+	}
 	created.Add(ctx, 0)
 	completed.Add(ctx, 0)
 
 	return &Telemetry{
-		TracerProvider: traceProvider,
-		MeterProvider:  meterProvider,
-		Tracer:         traceProvider.Tracer(scopeName),
-		Meter:          meter,
-		created:        created,
-		completed:      completed,
-		active:         active,
-		dbDuration:     dbDuration,
+		positionMetrics: positions,
+		TracerProvider:  traceProvider,
+		MeterProvider:   meterProvider,
+		Tracer:          traceProvider.Tracer(scopeName),
+		Meter:           meter,
+		created:         created,
+		completed:       completed,
+		active:          active,
+		dbDuration:      dbDuration,
 	}, nil
 }
 

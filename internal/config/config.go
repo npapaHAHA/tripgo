@@ -15,6 +15,7 @@ type Config struct {
 	LogLevel        slog.Level
 	ShutdownTimeout time.Duration
 	Database        DatabaseConfig
+	Positions       PositionConfig
 }
 
 type HTTPConfig struct {
@@ -58,10 +59,15 @@ func Load() (Config, error) {
 	if err := validateTelemetry(); err != nil {
 		return Config{}, err
 	}
+	positionConfig, err := loadPositions()
+	if err != nil {
+		return Config{}, err
+	}
 
 	return Config{
 		HTTP:            httpConfig,
 		Database:        databaseConfig,
+		Positions:       positionConfig,
 		LogLevel:        logLevel,
 		ShutdownTimeout: shutdownTimeout,
 	}, nil
