@@ -18,16 +18,22 @@ import (
 )
 
 func TestExecute(t *testing.T) {
-	id := uuid.New()
-	active := trip.Trip{ID: id, Status: trip.StatusActive, Price: 100, StartedAt: time.Now().Add(-time.Hour)}
+	ctx := context.Background()
+	id := uuid.MustParse("b7a855a7-3436-4a36-a50e-f76142080816")
+	active := trip.Trip{
+		ID:        id,
+		Status:    trip.StatusActive,
+		Price:     100,
+		StartedAt: time.Date(2026, time.November, 20, 9, 0, 0, 0, time.UTC),
+	}
 	completed := active
 	completed.Status = trip.StatusCompleted
 	finishedAt := active.StartedAt.Add(time.Hour)
 	completed.FinishedAt = &finishedAt
 	previous := trip.StatusActive
 	storageErr := errors.New("database unavailable")
-	runTransaction := func(ctx context.Context, fn func(context.Context) error) error {
-		return fn(ctx)
+	now := func() time.Time {
+		return finishedAt
 	}
 
 	tests := []struct {
@@ -42,18 +48,14 @@ func TestExecute(t *testing.T) {
 			name: "success",
 			setup: func(ctrl *gomock.Controller, logger *slog.Logger) *finish.UseCase {
 				repository := NewMocktripRepository(ctrl)
-				tx := NewMocktxManager(ctrl)
 				metrics := NewMockmetrics(ctrl)
-				tx.EXPECT().Do(gomock.Any(), gomock.Any()).DoAndReturn(runTransaction)
 				gomock.InOrder(
 					repository.EXPECT().GetByID(gomock.Any(), id).Return(active, nil),
-					repository.EXPECT().Finish(gomock.Any(), id, gomock.Cond(func(at time.Time) bool {
-						return at.After(active.StartedAt)
-					})).Return(completed, nil),
+					repository.EXPECT().Finish(gomock.Any(), id, finishedAt).Return(completed, nil),
 					repository.EXPECT().AddStatusHistory(gomock.Any(), id, &previous, trip.StatusCompleted, "trip completed").Return(nil),
+					metrics.EXPECT().TripCompleted(ctx),
 				)
-				metrics.EXPECT().TripCompleted(gomock.Any())
-				return finish.New(repository, tx, time.Second, logger, metrics)
+				return finish.New(repository, txStub{}, time.Second, logger, metrics, now)
 			},
 			in:      id,
 			want:    completed,
@@ -63,10 +65,8 @@ func TestExecute(t *testing.T) {
 			name: "missing trip",
 			setup: func(ctrl *gomock.Controller, logger *slog.Logger) *finish.UseCase {
 				repository := NewMocktripRepository(ctrl)
-				tx := NewMocktxManager(ctrl)
-				tx.EXPECT().Do(gomock.Any(), gomock.Any()).DoAndReturn(runTransaction)
 				repository.EXPECT().GetByID(gomock.Any(), id).Return(trip.Trip{}, trip.ErrTripNotFound)
-				return finish.New(repository, tx, time.Second, logger, NewMockmetrics(ctrl))
+				return finish.New(repository, txStub{}, time.Second, logger, NewMockmetrics(ctrl), now)
 			},
 			in:      id,
 			wantErr: trip.ErrTripNotFound,
@@ -75,10 +75,8 @@ func TestExecute(t *testing.T) {
 			name: "fetch failed",
 			setup: func(ctrl *gomock.Controller, logger *slog.Logger) *finish.UseCase {
 				repository := NewMocktripRepository(ctrl)
-				tx := NewMocktxManager(ctrl)
-				tx.EXPECT().Do(gomock.Any(), gomock.Any()).DoAndReturn(runTransaction)
 				repository.EXPECT().GetByID(gomock.Any(), id).Return(trip.Trip{}, storageErr)
-				return finish.New(repository, tx, time.Second, logger, NewMockmetrics(ctrl))
+				return finish.New(repository, txStub{}, time.Second, logger, NewMockmetrics(ctrl), now)
 			},
 			in:      id,
 			wantErr: storageErr,
@@ -88,10 +86,8 @@ func TestExecute(t *testing.T) {
 			name: "already completed",
 			setup: func(ctrl *gomock.Controller, logger *slog.Logger) *finish.UseCase {
 				repository := NewMocktripRepository(ctrl)
-				tx := NewMocktxManager(ctrl)
-				tx.EXPECT().Do(gomock.Any(), gomock.Any()).DoAndReturn(runTransaction)
 				repository.EXPECT().GetByID(gomock.Any(), id).Return(completed, nil)
-				return finish.New(repository, tx, time.Second, logger, NewMockmetrics(ctrl))
+				return finish.New(repository, txStub{}, time.Second, logger, NewMockmetrics(ctrl), now)
 			},
 			in:      id,
 			wantErr: trip.ErrTripCompleted,
@@ -100,11 +96,11 @@ func TestExecute(t *testing.T) {
 			name: "concurrent completion",
 			setup: func(ctrl *gomock.Controller, logger *slog.Logger) *finish.UseCase {
 				repository := NewMocktripRepository(ctrl)
-				tx := NewMocktxManager(ctrl)
-				tx.EXPECT().Do(gomock.Any(), gomock.Any()).DoAndReturn(runTransaction)
-				repository.EXPECT().GetByID(gomock.Any(), id).Return(active, nil)
-				repository.EXPECT().Finish(gomock.Any(), id, gomock.Any()).Return(trip.Trip{}, trip.ErrTripCompleted)
-				return finish.New(repository, tx, time.Second, logger, NewMockmetrics(ctrl))
+				gomock.InOrder(
+					repository.EXPECT().GetByID(gomock.Any(), id).Return(active, nil),
+					repository.EXPECT().Finish(gomock.Any(), id, finishedAt).Return(trip.Trip{}, trip.ErrTripCompleted),
+				)
+				return finish.New(repository, txStub{}, time.Second, logger, NewMockmetrics(ctrl), now)
 			},
 			in:      id,
 			wantErr: trip.ErrTripCompleted,
@@ -113,11 +109,11 @@ func TestExecute(t *testing.T) {
 			name: "update failed",
 			setup: func(ctrl *gomock.Controller, logger *slog.Logger) *finish.UseCase {
 				repository := NewMocktripRepository(ctrl)
-				tx := NewMocktxManager(ctrl)
-				tx.EXPECT().Do(gomock.Any(), gomock.Any()).DoAndReturn(runTransaction)
-				repository.EXPECT().GetByID(gomock.Any(), id).Return(active, nil)
-				repository.EXPECT().Finish(gomock.Any(), id, gomock.Any()).Return(trip.Trip{}, storageErr)
-				return finish.New(repository, tx, time.Second, logger, NewMockmetrics(ctrl))
+				gomock.InOrder(
+					repository.EXPECT().GetByID(gomock.Any(), id).Return(active, nil),
+					repository.EXPECT().Finish(gomock.Any(), id, finishedAt).Return(trip.Trip{}, storageErr),
+				)
+				return finish.New(repository, txStub{}, time.Second, logger, NewMockmetrics(ctrl), now)
 			},
 			in:      id,
 			wantErr: storageErr,
@@ -127,12 +123,12 @@ func TestExecute(t *testing.T) {
 			name: "history failed",
 			setup: func(ctrl *gomock.Controller, logger *slog.Logger) *finish.UseCase {
 				repository := NewMocktripRepository(ctrl)
-				tx := NewMocktxManager(ctrl)
-				tx.EXPECT().Do(gomock.Any(), gomock.Any()).DoAndReturn(runTransaction)
-				repository.EXPECT().GetByID(gomock.Any(), id).Return(active, nil)
-				repository.EXPECT().Finish(gomock.Any(), id, gomock.Any()).Return(completed, nil)
-				repository.EXPECT().AddStatusHistory(gomock.Any(), id, &previous, trip.StatusCompleted, "trip completed").Return(storageErr)
-				return finish.New(repository, tx, time.Second, logger, NewMockmetrics(ctrl))
+				gomock.InOrder(
+					repository.EXPECT().GetByID(gomock.Any(), id).Return(active, nil),
+					repository.EXPECT().Finish(gomock.Any(), id, finishedAt).Return(completed, nil),
+					repository.EXPECT().AddStatusHistory(gomock.Any(), id, &previous, trip.StatusCompleted, "trip completed").Return(storageErr),
+				)
+				return finish.New(repository, txStub{}, time.Second, logger, NewMockmetrics(ctrl), now)
 			},
 			in:      id,
 			wantErr: storageErr,
@@ -142,17 +138,12 @@ func TestExecute(t *testing.T) {
 			name: "commit failed",
 			setup: func(ctrl *gomock.Controller, logger *slog.Logger) *finish.UseCase {
 				repository := NewMocktripRepository(ctrl)
-				tx := NewMocktxManager(ctrl)
-				tx.EXPECT().Do(gomock.Any(), gomock.Any()).DoAndReturn(func(ctx context.Context, fn func(context.Context) error) error {
-					if err := fn(ctx); err != nil {
-						return err
-					}
-					return storageErr
-				})
-				repository.EXPECT().GetByID(gomock.Any(), id).Return(active, nil)
-				repository.EXPECT().Finish(gomock.Any(), id, gomock.Any()).Return(completed, nil)
-				repository.EXPECT().AddStatusHistory(gomock.Any(), id, &previous, trip.StatusCompleted, "trip completed").Return(nil)
-				return finish.New(repository, tx, time.Second, logger, NewMockmetrics(ctrl))
+				gomock.InOrder(
+					repository.EXPECT().GetByID(gomock.Any(), id).Return(active, nil),
+					repository.EXPECT().Finish(gomock.Any(), id, finishedAt).Return(completed, nil),
+					repository.EXPECT().AddStatusHistory(gomock.Any(), id, &previous, trip.StatusCompleted, "trip completed").Return(nil),
+				)
+				return finish.New(repository, txStub{commitErr: storageErr}, time.Second, logger, NewMockmetrics(ctrl), now)
 			},
 			in:      id,
 			wantErr: storageErr,
@@ -163,7 +154,7 @@ func TestExecute(t *testing.T) {
 			setup: func(ctrl *gomock.Controller, logger *slog.Logger) *finish.UseCase {
 				tx := NewMocktxManager(ctrl)
 				tx.EXPECT().Do(gomock.Any(), gomock.Any()).Return(storageErr)
-				return finish.New(NewMocktripRepository(ctrl), tx, time.Second, logger, NewMockmetrics(ctrl))
+				return finish.New(NewMocktripRepository(ctrl), tx, time.Second, logger, NewMockmetrics(ctrl), now)
 			},
 			in:      id,
 			wantErr: storageErr,
@@ -176,7 +167,7 @@ func TestExecute(t *testing.T) {
 			ctrl := gomock.NewController(t)
 			var logs bytes.Buffer
 			logger := slog.New(slog.NewJSONHandler(&logs, nil))
-			value, err := tt.setup(ctrl, logger).Execute(context.Background(), tt.in)
+			value, err := tt.setup(ctrl, logger).Execute(ctx, tt.in)
 			require.ErrorIs(t, err, tt.wantErr)
 			require.Equal(t, tt.want, value)
 			if tt.wantLog == "" {
@@ -190,4 +181,15 @@ func TestExecute(t *testing.T) {
 			}
 		})
 	}
+}
+
+type txStub struct {
+	commitErr error
+}
+
+func (s txStub) Do(ctx context.Context, fn func(context.Context) error) error {
+	if err := fn(ctx); err != nil {
+		return err
+	}
+	return s.commitErr
 }

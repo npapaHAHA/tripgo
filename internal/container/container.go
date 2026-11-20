@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/npapaHAHA/tripgo/internal/config"
@@ -69,9 +71,9 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (_ *Contai
 		return nil, fmt.Errorf("register active trips metric: %w", err)
 	}
 
-	createUseCase := create.New(repository, tx, cfg.Database.QueryTimeout, logger, tel)
+	createUseCase := create.New(repository, tx, cfg.Database.QueryTimeout, logger, tel, uuid.New, time.Now)
 	getUseCase := get.New(repository, cfg.Database.QueryTimeout, logger)
-	finishUseCase := finish.New(repository, tx, cfg.Database.QueryTimeout, logger, tel)
+	finishUseCase := finish.New(repository, tx, cfg.Database.QueryTimeout, logger, tel, time.Now)
 	router := httpapi.NewRouter(
 		createhandler.New(createUseCase), gethandler.New(getUseCase), finishhandler.New(finishUseCase),
 		app.pool, cfg.Database.QueryTimeout, logger,

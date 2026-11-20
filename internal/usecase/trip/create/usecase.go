@@ -7,6 +7,8 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/npapaHAHA/tripgo/internal/domain/trip"
 	"github.com/npapaHAHA/tripgo/internal/model"
 )
@@ -17,14 +19,27 @@ type UseCase struct {
 	timeout    time.Duration
 	logger     *slog.Logger
 	metrics    metrics
+	newID      func() uuid.UUID
+	now        func() time.Time
 }
 
-func New(repository tripRepository, tx txManager, timeout time.Duration, logger *slog.Logger, metrics metrics) *UseCase {
-	return &UseCase{repository: repository, tx: tx, timeout: timeout, logger: logger, metrics: metrics}
+func New(
+	repository tripRepository,
+	tx txManager,
+	timeout time.Duration,
+	logger *slog.Logger,
+	metrics metrics,
+	newID func() uuid.UUID,
+	now func() time.Time,
+) *UseCase {
+	return &UseCase{
+		repository: repository, tx: tx, timeout: timeout, logger: logger, metrics: metrics,
+		newID: newID, now: now,
+	}
 }
 
 func (u *UseCase) Execute(ctx context.Context, input model.CreateTripInput) (trip.Trip, error) {
-	value, err := trip.New(input.UserID, input.DriverID, input.StartPoint, input.EndPoint, input.Price)
+	value, err := trip.New(u.newID(), input.UserID, input.DriverID, input.StartPoint, input.EndPoint, input.Price, u.now())
 	if err != nil {
 		return trip.Trip{}, fmt.Errorf("validate trip: %w", err)
 	}

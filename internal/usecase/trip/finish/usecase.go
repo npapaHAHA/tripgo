@@ -18,10 +18,11 @@ type UseCase struct {
 	timeout    time.Duration
 	logger     *slog.Logger
 	metrics    metrics
+	now        func() time.Time
 }
 
-func New(repository tripRepository, tx txManager, timeout time.Duration, logger *slog.Logger, metrics metrics) *UseCase {
-	return &UseCase{repository: repository, tx: tx, timeout: timeout, logger: logger, metrics: metrics}
+func New(repository tripRepository, tx txManager, timeout time.Duration, logger *slog.Logger, metrics metrics, now func() time.Time) *UseCase {
+	return &UseCase{repository: repository, tx: tx, timeout: timeout, logger: logger, metrics: metrics, now: now}
 }
 
 func (u *UseCase) Execute(ctx context.Context, id uuid.UUID) (trip.Trip, error) {
@@ -37,7 +38,7 @@ func (u *UseCase) Execute(ctx context.Context, id uuid.UUID) (trip.Trip, error) 
 		}
 
 		fromStatus := value.Status
-		finishedAt := time.Now().UTC()
+		finishedAt := u.now().UTC()
 		if err := value.Finish(finishedAt); err != nil {
 			return err
 		}

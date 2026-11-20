@@ -12,29 +12,28 @@ import (
 )
 
 func TestNew(t *testing.T) {
+	id := uuid.MustParse("00000000-0000-4000-8000-000000000001")
 	userID, driverID := uuid.New(), uuid.New()
 	start := trip.Coordinates{Latitude: 59.9398, Longitude: 30.3146}
 	end := trip.Coordinates{Latitude: 59.9290, Longitude: 30.3626}
-	got, err := trip.New(userID, driverID, start, end, 1450)
+	startedAt := time.Date(2026, time.November, 5, 15, 0, 0, 123456789, time.FixedZone("UTC+3", 3*60*60))
+	got, err := trip.New(id, userID, driverID, start, end, 1450, startedAt)
 
 	require.NoError(t, err)
-	require.NotEqual(t, uuid.Nil, got.ID)
-	require.False(t, got.StartedAt.IsZero())
-	require.Equal(t, got.StartedAt.UTC().Truncate(time.Microsecond), got.StartedAt)
 	require.Equal(t, trip.Trip{
-		ID:         got.ID,
+		ID:         id,
 		UserID:     userID,
 		DriverID:   driverID,
 		StartPoint: start,
 		EndPoint:   end,
 		Price:      1450,
 		Status:     trip.StatusActive,
-		StartedAt:  got.StartedAt,
+		StartedAt:  time.Date(2026, time.November, 5, 12, 0, 0, 123456000, time.UTC),
 	}, got)
 }
 
 func TestNewRejectsInvalidInput(t *testing.T) {
-	value, err := trip.New(uuid.New(), uuid.New(), trip.Coordinates{}, trip.Coordinates{}, -1)
+	value, err := trip.New(uuid.New(), uuid.New(), uuid.New(), trip.Coordinates{}, trip.Coordinates{}, -1, time.Time{})
 	var validation *trip.ValidationError
 	require.ErrorAs(t, err, &validation)
 	require.Equal(t, trip.Trip{}, value)

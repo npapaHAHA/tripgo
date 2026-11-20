@@ -35,16 +35,16 @@ type Trip struct {
 
 var tripValidator = validator.New()
 
-func New(userID, driverID uuid.UUID, startPoint, endPoint Coordinates, price int64) (Trip, error) {
+func New(id, userID, driverID uuid.UUID, startPoint, endPoint Coordinates, price int64, startedAt time.Time) (Trip, error) {
 	value := Trip{
-		ID:         uuid.New(),
+		ID:         id,
 		UserID:     userID,
 		DriverID:   driverID,
 		StartPoint: startPoint,
 		EndPoint:   endPoint,
 		Price:      price,
 		Status:     StatusActive,
-		StartedAt:  time.Now().UTC().Truncate(time.Microsecond),
+		StartedAt:  startedAt.UTC().Truncate(time.Microsecond),
 	}
 	if err := value.Validate(); err != nil {
 		return Trip{}, err

@@ -18,11 +18,21 @@ import (
 )
 
 func TestExecute(t *testing.T) {
+	id := uuid.MustParse("8ed1b6e0-2483-452c-a241-f6acfe4a1b68")
+	startedAt := time.Date(2026, time.November, 20, 12, 0, 0, 0, time.UTC)
+	newID := func() uuid.UUID { return id }
+	now := func() time.Time { return startedAt }
 	input := model.CreateTripInput{
-		UserID: uuid.New(), DriverID: uuid.New(),
+		UserID:     uuid.MustParse("5cb72c04-7650-45c9-a79b-bcdba0631e0c"),
+		DriverID:   uuid.MustParse("8860b315-ec86-42eb-a17c-7c163d721ff5"),
 		StartPoint: trip.Coordinates{Latitude: 55.75, Longitude: 37.61},
 		EndPoint:   trip.Coordinates{Latitude: 55.76, Longitude: 37.62},
 		Price:      100,
+	}
+	expected := trip.Trip{
+		ID: id, UserID: input.UserID, DriverID: input.DriverID,
+		StartPoint: input.StartPoint, EndPoint: input.EndPoint, Price: input.Price,
+		Status: trip.StatusActive, StartedAt: startedAt,
 	}
 	invalidInput := input
 	invalidInput.Price = -1
@@ -32,49 +42,33 @@ func TestExecute(t *testing.T) {
 		require.ErrorIs(t, err, storageErr)
 	}
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	var saved trip.Trip
-	runTransaction := func(ctx context.Context, fn func(context.Context) error) error {
-		return fn(ctx)
-	}
 
 	tests := []struct {
 		name    string
 		setup   func(*gomock.Controller) *create.UseCase
 		in      model.CreateTripInput
-		want    func(*testing.T, trip.Trip)
+		want    trip.Trip
 		wantErr func(*testing.T, error)
 	}{
 		{
 			name: "success",
 			setup: func(ctrl *gomock.Controller) *create.UseCase {
 				repository := NewMocktripRepository(ctrl)
-				tx := NewMocktxManager(ctrl)
 				metrics := NewMockmetrics(ctrl)
-				tx.EXPECT().Do(gomock.Any(), gomock.Any()).DoAndReturn(runTransaction)
 				gomock.InOrder(
-					repository.EXPECT().Create(gomock.Any(), gomock.Cond(func(value trip.Trip) bool {
-						return value.UserID == input.UserID && value.DriverID == input.DriverID &&
-							value.StartPoint == input.StartPoint && value.EndPoint == input.EndPoint && value.Price == input.Price
-					})).DoAndReturn(func(_ context.Context, value trip.Trip) error {
-						saved = value
-						return nil
-					}),
-					repository.EXPECT().AddStatusHistory(gomock.Any(), gomock.Cond(func(id uuid.UUID) bool {
-						return id == saved.ID
-					}), nil, trip.StatusActive, "trip created").Return(nil),
+					repository.EXPECT().Create(gomock.Any(), expected).Return(nil),
+					repository.EXPECT().AddStatusHistory(gomock.Any(), id, nil, trip.StatusActive, "trip created").Return(nil),
+					metrics.EXPECT().TripCreated(context.Background()).Return(),
 				)
-				metrics.EXPECT().TripCreated(gomock.Any())
-				return create.New(repository, tx, time.Second, logger, metrics)
+				return create.New(repository, txStub{}, time.Second, logger, metrics, newID, now)
 			},
-			in: input,
-			want: func(t *testing.T, value trip.Trip) {
-				require.Equal(t, saved, value)
-			},
+			in:   input,
+			want: expected,
 		},
 		{
 			name: "invalid input",
 			setup: func(ctrl *gomock.Controller) *create.UseCase {
-				return create.New(NewMocktripRepository(ctrl), NewMocktxManager(ctrl), time.Second, logger, NewMockmetrics(ctrl))
+				return create.New(NewMocktripRepository(ctrl), NewMocktxManager(ctrl), time.Second, logger, NewMockmetrics(ctrl), newID, now)
 			},
 			in: invalidInput,
 			wantErr: func(t *testing.T, err error) {
@@ -87,10 +81,8 @@ func TestExecute(t *testing.T) {
 			name: "driver busy",
 			setup: func(ctrl *gomock.Controller) *create.UseCase {
 				repository := NewMocktripRepository(ctrl)
-				tx := NewMocktxManager(ctrl)
-				tx.EXPECT().Do(gomock.Any(), gomock.Any()).DoAndReturn(runTransaction)
-				repository.EXPECT().Create(gomock.Any(), gomock.Any()).Return(trip.ErrDriverBusy)
-				return create.New(repository, tx, time.Second, logger, NewMockmetrics(ctrl))
+				repository.EXPECT().Create(gomock.Any(), expected).Return(trip.ErrDriverBusy)
+				return create.New(repository, txStub{}, time.Second, logger, NewMockmetrics(ctrl), newID, now)
 			},
 			in:      input,
 			wantErr: func(t *testing.T, err error) { require.ErrorIs(t, err, trip.ErrDriverBusy) },
@@ -99,10 +91,8 @@ func TestExecute(t *testing.T) {
 			name: "insert failed",
 			setup: func(ctrl *gomock.Controller) *create.UseCase {
 				repository := NewMocktripRepository(ctrl)
-				tx := NewMocktxManager(ctrl)
-				tx.EXPECT().Do(gomock.Any(), gomock.Any()).DoAndReturn(runTransaction)
-				repository.EXPECT().Create(gomock.Any(), gomock.Any()).Return(storageErr)
-				return create.New(repository, tx, time.Second, logger, NewMockmetrics(ctrl))
+				repository.EXPECT().Create(gomock.Any(), expected).Return(storageErr)
+				return create.New(repository, txStub{}, time.Second, logger, NewMockmetrics(ctrl), newID, now)
 			},
 			in:      input,
 			wantErr: wantStorageError,
@@ -111,11 +101,11 @@ func TestExecute(t *testing.T) {
 			name: "history failed",
 			setup: func(ctrl *gomock.Controller) *create.UseCase {
 				repository := NewMocktripRepository(ctrl)
-				tx := NewMocktxManager(ctrl)
-				tx.EXPECT().Do(gomock.Any(), gomock.Any()).DoAndReturn(runTransaction)
-				repository.EXPECT().Create(gomock.Any(), gomock.Any()).Return(nil)
-				repository.EXPECT().AddStatusHistory(gomock.Any(), gomock.Any(), nil, trip.StatusActive, "trip created").Return(storageErr)
-				return create.New(repository, tx, time.Second, logger, NewMockmetrics(ctrl))
+				gomock.InOrder(
+					repository.EXPECT().Create(gomock.Any(), expected).Return(nil),
+					repository.EXPECT().AddStatusHistory(gomock.Any(), id, nil, trip.StatusActive, "trip created").Return(storageErr),
+				)
+				return create.New(repository, txStub{}, time.Second, logger, NewMockmetrics(ctrl), newID, now)
 			},
 			in:      input,
 			wantErr: wantStorageError,
@@ -124,16 +114,11 @@ func TestExecute(t *testing.T) {
 			name: "commit failed",
 			setup: func(ctrl *gomock.Controller) *create.UseCase {
 				repository := NewMocktripRepository(ctrl)
-				tx := NewMocktxManager(ctrl)
-				tx.EXPECT().Do(gomock.Any(), gomock.Any()).DoAndReturn(func(ctx context.Context, fn func(context.Context) error) error {
-					if err := fn(ctx); err != nil {
-						return err
-					}
-					return storageErr
-				})
-				repository.EXPECT().Create(gomock.Any(), gomock.Any()).Return(nil)
-				repository.EXPECT().AddStatusHistory(gomock.Any(), gomock.Any(), nil, trip.StatusActive, "trip created").Return(nil)
-				return create.New(repository, tx, time.Second, logger, NewMockmetrics(ctrl))
+				gomock.InOrder(
+					repository.EXPECT().Create(gomock.Any(), expected).Return(nil),
+					repository.EXPECT().AddStatusHistory(gomock.Any(), id, nil, trip.StatusActive, "trip created").Return(nil),
+				)
+				return create.New(repository, txStub{commitErr: storageErr}, time.Second, logger, NewMockmetrics(ctrl), newID, now)
 			},
 			in:      input,
 			wantErr: wantStorageError,
@@ -143,7 +128,7 @@ func TestExecute(t *testing.T) {
 			setup: func(ctrl *gomock.Controller) *create.UseCase {
 				tx := NewMocktxManager(ctrl)
 				tx.EXPECT().Do(gomock.Any(), gomock.Any()).Return(storageErr)
-				return create.New(NewMocktripRepository(ctrl), tx, time.Second, logger, NewMockmetrics(ctrl))
+				return create.New(NewMocktripRepository(ctrl), tx, time.Second, logger, NewMockmetrics(ctrl), newID, now)
 			},
 			in:      input,
 			wantErr: wantStorageError,
@@ -159,11 +144,18 @@ func TestExecute(t *testing.T) {
 			} else {
 				require.NoError(t, err)
 			}
-			if tt.want != nil {
-				tt.want(t, value)
-			} else {
-				require.Equal(t, trip.Trip{}, value)
-			}
+			require.Equal(t, tt.want, value)
 		})
 	}
+}
+
+type txStub struct {
+	commitErr error
+}
+
+func (s txStub) Do(ctx context.Context, fn func(context.Context) error) error {
+	if err := fn(ctx); err != nil {
+		return err
+	}
+	return s.commitErr
 }
