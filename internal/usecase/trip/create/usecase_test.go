@@ -34,21 +34,14 @@ func TestExecute(t *testing.T) {
 		StartPoint: input.StartPoint, EndPoint: input.EndPoint, Price: input.Price,
 		Status: trip.StatusActive, StartedAt: startedAt,
 	}
-	invalidInput := input
-	invalidInput.Price = -1
 	storageErr := errors.New("database unavailable")
-	wantStorageError := func(t *testing.T, err error) {
-		t.Helper()
-		require.ErrorIs(t, err, storageErr)
-	}
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 
 	tests := []struct {
 		name    string
 		setup   func(*gomock.Controller) *create.UseCase
-		in      model.CreateTripInput
 		want    trip.Trip
-		wantErr func(*testing.T, error)
+		wantErr error
 	}{
 		{
 			name: "success",
@@ -62,20 +55,7 @@ func TestExecute(t *testing.T) {
 				)
 				return create.New(repository, txStub{}, time.Second, logger, metrics, newID, now)
 			},
-			in:   input,
 			want: expected,
-		},
-		{
-			name: "invalid input",
-			setup: func(ctrl *gomock.Controller) *create.UseCase {
-				return create.New(NewMocktripRepository(ctrl), NewMocktxManager(ctrl), time.Second, logger, NewMockmetrics(ctrl), newID, now)
-			},
-			in: invalidInput,
-			wantErr: func(t *testing.T, err error) {
-				var validation *trip.ValidationError
-				require.ErrorAs(t, err, &validation)
-				require.Equal(t, "price", validation.Field)
-			},
 		},
 		{
 			name: "driver busy",
@@ -84,8 +64,7 @@ func TestExecute(t *testing.T) {
 				repository.EXPECT().Create(gomock.Any(), expected).Return(trip.ErrDriverBusy)
 				return create.New(repository, txStub{}, time.Second, logger, NewMockmetrics(ctrl), newID, now)
 			},
-			in:      input,
-			wantErr: func(t *testing.T, err error) { require.ErrorIs(t, err, trip.ErrDriverBusy) },
+			wantErr: trip.ErrDriverBusy,
 		},
 		{
 			name: "insert failed",
@@ -94,8 +73,7 @@ func TestExecute(t *testing.T) {
 				repository.EXPECT().Create(gomock.Any(), expected).Return(storageErr)
 				return create.New(repository, txStub{}, time.Second, logger, NewMockmetrics(ctrl), newID, now)
 			},
-			in:      input,
-			wantErr: wantStorageError,
+			wantErr: storageErr,
 		},
 		{
 			name: "history failed",
@@ -107,8 +85,7 @@ func TestExecute(t *testing.T) {
 				)
 				return create.New(repository, txStub{}, time.Second, logger, NewMockmetrics(ctrl), newID, now)
 			},
-			in:      input,
-			wantErr: wantStorageError,
+			wantErr: storageErr,
 		},
 		{
 			name: "commit failed",
@@ -120,8 +97,7 @@ func TestExecute(t *testing.T) {
 				)
 				return create.New(repository, txStub{commitErr: storageErr}, time.Second, logger, NewMockmetrics(ctrl), newID, now)
 			},
-			in:      input,
-			wantErr: wantStorageError,
+			wantErr: storageErr,
 		},
 		{
 			name: "begin failed",
@@ -130,23 +106,40 @@ func TestExecute(t *testing.T) {
 				tx.EXPECT().Do(gomock.Any(), gomock.Any()).Return(storageErr)
 				return create.New(NewMocktripRepository(ctrl), tx, time.Second, logger, NewMockmetrics(ctrl), newID, now)
 			},
-			in:      input,
-			wantErr: wantStorageError,
+			wantErr: storageErr,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			ctrl := gomock.NewController(t)
-			value, err := tt.setup(ctrl).Execute(context.Background(), tt.in)
-			if tt.wantErr != nil {
-				tt.wantErr(t, err)
-			} else {
-				require.NoError(t, err)
-			}
+			value, err := tt.setup(ctrl).Execute(context.Background(), input)
+			require.ErrorIs(t, err, tt.wantErr)
 			require.Equal(t, tt.want, value)
 		})
 	}
+}
+
+func TestExecuteInvalidPrice(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	id := uuid.MustParse("8ed1b6e0-2483-452c-a241-f6acfe4a1b68")
+	startedAt := time.Date(2026, time.November, 20, 12, 0, 0, 0, time.UTC)
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	usecase := create.New(
+		NewMocktripRepository(ctrl), NewMocktxManager(ctrl), time.Second, logger, NewMockmetrics(ctrl),
+		func() uuid.UUID { return id }, func() time.Time { return startedAt },
+	)
+
+	input := model.CreateTripInput{
+		UserID:   uuid.MustParse("5cb72c04-7650-45c9-a79b-bcdba0631e0c"),
+		DriverID: uuid.MustParse("8860b315-ec86-42eb-a17c-7c163d721ff5"),
+		Price:    -1,
+	}
+	value, err := usecase.Execute(context.Background(), input)
+	var validation *trip.ValidationError
+	require.ErrorAs(t, err, &validation)
+	require.Equal(t, "price", validation.Field)
+	require.Equal(t, trip.Trip{}, value)
 }
 
 type txStub struct {

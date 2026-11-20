@@ -39,7 +39,6 @@ func TestExecute(t *testing.T) {
 	tests := []struct {
 		name    string
 		setup   func(*gomock.Controller, *slog.Logger) *finish.UseCase
-		in      uuid.UUID
 		want    trip.Trip
 		wantErr error
 		wantLog string
@@ -57,7 +56,6 @@ func TestExecute(t *testing.T) {
 				)
 				return finish.New(repository, txStub{}, time.Second, logger, metrics, now)
 			},
-			in:      id,
 			want:    completed,
 			wantLog: "trip completed",
 		},
@@ -68,7 +66,6 @@ func TestExecute(t *testing.T) {
 				repository.EXPECT().GetByID(gomock.Any(), id).Return(trip.Trip{}, trip.ErrTripNotFound)
 				return finish.New(repository, txStub{}, time.Second, logger, NewMockmetrics(ctrl), now)
 			},
-			in:      id,
 			wantErr: trip.ErrTripNotFound,
 		},
 		{
@@ -78,7 +75,6 @@ func TestExecute(t *testing.T) {
 				repository.EXPECT().GetByID(gomock.Any(), id).Return(trip.Trip{}, storageErr)
 				return finish.New(repository, txStub{}, time.Second, logger, NewMockmetrics(ctrl), now)
 			},
-			in:      id,
 			wantErr: storageErr,
 			wantLog: storageErr.Error(),
 		},
@@ -89,7 +85,6 @@ func TestExecute(t *testing.T) {
 				repository.EXPECT().GetByID(gomock.Any(), id).Return(completed, nil)
 				return finish.New(repository, txStub{}, time.Second, logger, NewMockmetrics(ctrl), now)
 			},
-			in:      id,
 			wantErr: trip.ErrTripCompleted,
 		},
 		{
@@ -102,7 +97,6 @@ func TestExecute(t *testing.T) {
 				)
 				return finish.New(repository, txStub{}, time.Second, logger, NewMockmetrics(ctrl), now)
 			},
-			in:      id,
 			wantErr: trip.ErrTripCompleted,
 		},
 		{
@@ -115,7 +109,6 @@ func TestExecute(t *testing.T) {
 				)
 				return finish.New(repository, txStub{}, time.Second, logger, NewMockmetrics(ctrl), now)
 			},
-			in:      id,
 			wantErr: storageErr,
 			wantLog: storageErr.Error(),
 		},
@@ -130,7 +123,6 @@ func TestExecute(t *testing.T) {
 				)
 				return finish.New(repository, txStub{}, time.Second, logger, NewMockmetrics(ctrl), now)
 			},
-			in:      id,
 			wantErr: storageErr,
 			wantLog: storageErr.Error(),
 		},
@@ -145,7 +137,6 @@ func TestExecute(t *testing.T) {
 				)
 				return finish.New(repository, txStub{commitErr: storageErr}, time.Second, logger, NewMockmetrics(ctrl), now)
 			},
-			in:      id,
 			wantErr: storageErr,
 			wantLog: storageErr.Error(),
 		},
@@ -156,7 +147,6 @@ func TestExecute(t *testing.T) {
 				tx.EXPECT().Do(gomock.Any(), gomock.Any()).Return(storageErr)
 				return finish.New(NewMocktripRepository(ctrl), tx, time.Second, logger, NewMockmetrics(ctrl), now)
 			},
-			in:      id,
 			wantErr: storageErr,
 			wantLog: storageErr.Error(),
 		},
@@ -167,19 +157,24 @@ func TestExecute(t *testing.T) {
 			ctrl := gomock.NewController(t)
 			var logs bytes.Buffer
 			logger := slog.New(slog.NewJSONHandler(&logs, nil))
-			value, err := tt.setup(ctrl, logger).Execute(ctx, tt.in)
+			value, err := tt.setup(ctrl, logger).Execute(ctx, id)
 			require.ErrorIs(t, err, tt.wantErr)
 			require.Equal(t, tt.want, value)
-			if tt.wantLog == "" {
-				require.Empty(t, logs.String())
-			} else {
-				require.Equal(t, 1, strings.Count(logs.String(), "\n"))
-				require.Contains(t, logs.String(), tt.wantLog)
-				if tt.wantErr != nil {
-					require.Contains(t, logs.String(), `"level":"ERROR"`)
-				}
-			}
+			assertLog(t, logs.String(), tt.wantLog, tt.wantErr)
 		})
+	}
+}
+
+func assertLog(t *testing.T, got, want string, wantErr error) {
+	t.Helper()
+	if want == "" {
+		require.Empty(t, got)
+		return
+	}
+	require.Equal(t, 1, strings.Count(got, "\n"))
+	require.Contains(t, got, want)
+	if wantErr != nil {
+		require.Contains(t, got, `"level":"ERROR"`)
 	}
 }
 
